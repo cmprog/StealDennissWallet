@@ -14,94 +14,244 @@
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 
+let playerScore = 0;
+let dennisScore = 0;
+
+// --- IMAGES ---
 const imgPlayer1 = new Image(); imgPlayer1.src = "player1.png";
 const imgPlayer2 = new Image(); imgPlayer2.src = "player2.png";
 const imgDennis  = new Image(); imgDennis.src  = "dennis.png";
 const imgWallet  = new Image(); imgWallet.src  = "wallet.png";
 
-// --- OBJECTS ---
-const player1 = { x: 50, y: 50, w: 32, h:32, speed: 2, startX:50, startY:50 };
-const player2 = { x:100, y: 50, w: 32, h:32, speed: 2, startX:100,startY:50 };
+// OBJECTS (sizes only, spawn happens later)
+const player1 = { w:32, h:32, speed:2 };
+const player2 = { w:32, h:32, speed:2 };
+const dennis  = { w:40, h:40, speed:1.6, dx:0, dy:0 };
+const wallet  = { w:24, h:24 };
 
-const dennis  = { x:700, y:500, w: 40, h:40, dx:1.5, dy:-1.2, speed:1.5 };
-const wallet  = { x:750, y:520, w: 24, h:24 };
-
-const walls = [
-  {x:200, y:100, w:20, h:400},
-  {x:400, y:0,   w:20, h:300},
-  {x:600, y:200, w:20, h:400},
-  {x:0,   y:300, w:300,h:20 },
-  {x:400, y:400, w:300,h:20 }
-];
-
+let walls = [];
 let gameOver = false;
 
-// key state
+// keys
 const keys = {};
 document.addEventListener('keydown',e=>keys[e.key]=true);
 document.addEventListener('keyup',e=>keys[e.key]=false);
 
-// movement + collision helpers
-function move(obj, dx, dy) {
+// ----- LEVEL INIT -----
+
+function randomInRange(min,max){ return Math.random()*(max-min)+min; }
+
+function getSafeSpawn(quadrant, size, walls, others, padding = 4) {
+    let attempts = 0;
+    const maxAttempts = 200;
+    let x, y;
+
+    while (attempts < maxAttempts) {
+        attempts++;
+
+        // pick pos based on quadrant selection
+        switch (quadrant) {
+            case 0:
+                x = Math.random() * (canvas.width / 2 - size) + size;
+                y = Math.random() * (canvas.height / 2 - size) + size;
+                break;
+            case 1:
+                x = Math.random() * (canvas.width / 2 - size) + canvas.width / 2;
+                y = Math.random() * (canvas.height / 2 - size) + size;
+                break;
+            case 2:
+                x = Math.random() * (canvas.width / 2 - size) + size;
+                y = Math.random() * (canvas.height / 2 - size) + canvas.height / 2;
+                break;
+            case 3:
+                x = Math.random() * (canvas.width / 2 - size) + canvas.width / 2;
+                y = Math.random() * (canvas.height / 2 - size) + canvas.height / 2;
+                break;
+        }
+
+        // check against walls
+        const collidesWall = walls.some(w =>
+            !(x + size < w.x || x > w.x + w.width || y + size < w.y || y > w.y + w.height)
+        );
+
+        if (collidesWall) continue;
+
+        // check against players/Dennis/wallet so they don't overlap each other
+        const collidesOthers = others.some(o => {
+            const dx = o.x - x;
+            const dy = o.y - y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            return dist < (o.w + size + padding);
+        });
+
+        if (collidesOthers) continue;
+
+        return { x, y };
+    }
+
+    console.warn("Fallback: safe spawn not found, returning 0,0");
+    return { x: 0, y: 0 };
+}
+
+function teleportDennisAway(minDist = 80, maxDist = 160) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = minDist + Math.random() * (maxDist - minDist);
+    const w = dennis.w;
+    const h = dennis.h;
+
+    // attempt up to 50 safe teleports
+    for (let i = 0; i < 50; i++) {
+        const nx = dennis.x + Math.cos(angle) * dist;
+        const ny = dennis.y + Math.sin(angle) * dist;
+
+        // check bounds
+        if (nx < 0 || ny < 0 || nx + w > canvas.width || ny + h > canvas.height) {
+            continue;
+        }
+
+        // check wall overlap
+        const collidesWall = walls.some(wall =>
+            !(nx + w < wall.x ||
+              nx > wall.x + wall.width ||
+              ny + h < wall.y ||
+              ny > wall.y + wall.height)
+        );
+        if (collidesWall) continue;
+
+        // check players
+        const players = [player1, player2];
+        const collidesPlayer = players.some(p => {            
+            const pw = p.w;
+            const ph = p.h;
+            return !(nx + w < p.x || nx > p.x + pw || ny + h < p.y || ny > p.y + ph);
+        });
+        if (collidesPlayer) continue;
+
+        // okay, safe spot found
+        dennis.x = nx;
+        dennis.y = ny;
+        return;
+    }
+
+    // fallback: no safe space found, do nothing
+    console.warn("Dennis couldn't find safe teleport location");
+}
+
+
+function initLevel(){
+  gameOver = false;
+
+  // 1. Randomize walls for challenge
+  walls = [];
+  for(let i=0;i<6;i++){
+    walls.push({
+      x: randomInRange(100, canvas.width-150),
+      y: randomInRange(100, canvas.height-150),
+      w: randomInRange(40,80),
+      h: randomInRange(150,250)
+    });
+  }
+
+  // Quadrants
+  const quads = [
+    {x:0, y:0, w:canvas.width/2, h:canvas.height/2},              // Q1
+    {x:canvas.width/2, y:0, w:canvas.width/2, h:canvas.height/2}, // Q2
+    {x:0, y:canvas.height/2, w:canvas.width/2, h:canvas.height/2},// Q3
+    {x:canvas.width/2, y:canvas.height/2, w:canvas.width/2, h:canvas.height/2} // Q4
+  ];
+
+  // Pick two distinct quadrants
+  const qPlayers = Math.floor(Math.random()*4);
+  let qDW = Math.floor(Math.random()*4);
+  while(qDW === qPlayers) qDW = Math.floor(Math.random()*4);
+
+  const qp = quads[qPlayers];
+  const qd = quads[qDW];
+
+  // Players spawn together
+    const p1Pos = getSafeSpawn(qPlayers, player1.w, walls, []);
+    player1.x = p1Pos.x;
+    player1.y = p1Pos.y;
+
+    const p2Pos = getSafeSpawn(qPlayers, player2.w, walls, [player1]);
+    player2.x = p2Pos.x;
+    player2.y = p2Pos.y;
+
+  // Save respawn points
+  player1.startX = player1.x; player1.startY = player1.y;
+  player2.startX = player2.x; player2.startY = player2.y;
+
+  // Dennis + wallet spawn together
+  const dennisPos = getSafeSpawn(qDW, dennis.w, walls, [player1, player2]);
+  dennis.x = dennisPos.x;
+  dennis.y = dennisPos.y;
+
+  const walletPos = getSafeSpawn(qDW, wallet.w, walls, [player1, player1, dennis]);
+  wallet.x = walletPos.x;
+  wallet.y = walletPos.y;
+
+  // Dennis wandering defaults
+  dennis.dx = (Math.random()*2-1)*dennis.speed;
+  dennis.dy = (Math.random()*2-1)*dennis.speed;
+}
+
+// ---- COLLISIONS ----
+function rectIntersect(a,b){
+  return !(a.x+a.w < b.x || a.x > b.x+b.w || a.y+a.h < b.y || a.y > b.y+b.h);
+}
+
+function move(obj, dx, dy){
   let newX = obj.x + dx;
   let newY = obj.y + dy;
 
   if(newX < 0) newX = 0;
   if(newY < 0) newY = 0;
-  if(newX + obj.w > canvas.width)  newX = canvas.width - obj.w;
-  if(newY + obj.h > canvas.height) newY = canvas.height - obj.h;
+  if(newX + obj.w > canvas.width) newX = canvas.width-obj.w;
+  if(newY + obj.h > canvas.height) newY = canvas.height-obj.h;
 
   let temp = {x:newX, y:newY, w:obj.w, h:obj.h};
   for(let w of walls){
     if(rectIntersect(temp,w)) return;
   }
-  obj.x = newX;
-  obj.y = newY;
+  obj.x = newX; obj.y = newY;
 }
 
-function rectIntersect(a,b){
-  return !(a.x+a.w < b.x || a.x > b.x+b.w || a.y+a.h < b.y || a.y > b.y+b.h);
-}
+// ---- DENNIS AI ----
+const DETECT_RADIUS = 200;
 
-// Dennis simple AI movement
 function moveDennis(){
-  let newX = dennis.x + dennis.dx;
-  let newY = dennis.y + dennis.dy;
+  // measure distance to players
+  function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
 
-  // bounce off screen edges
-  if(newX < 0 || newX + dennis.w > canvas.width) dennis.dx *= -1;
-  if(newY < 0 || newY + dennis.h > canvas.height) dennis.dy *= -1;
+  let d1 = dist(dennis, player1);
+  let d2 = dist(dennis, player2);
+  let closest = d1 < d2 ? player1 : player2;
+  let d = Math.min(d1, d2);
 
-  // bounce off walls
-  let temp = {x:newX, y:newY, w:dennis.w, h:dennis.h};
-  for(let w of walls){
-    if(rectIntersect(temp,w)){
-      dennis.dx *= -1;
-      dennis.dy *= -1;
-      return;
+  if(d < DETECT_RADIUS){
+    // chase closest
+    let angle = Math.atan2(closest.y - dennis.y, closest.x - dennis.x);
+    dennis.dx = Math.cos(angle)*dennis.speed;
+    dennis.dy = Math.sin(angle)*dennis.speed;
+  } else {
+    // wander randomly
+    if(Math.random() < 0.01){
+      dennis.dx = (Math.random()*2-1)*dennis.speed;
+      dennis.dy = (Math.random()*2-1)*dennis.speed;
     }
   }
 
-  dennis.x += dennis.dx;
-  dennis.y += dennis.dy;
-
-  // occasionally change direction
-  if(Math.random() < 0.01){
-    dennis.dx = (Math.random()*2-1)*dennis.speed;
-    dennis.dy = (Math.random()*2-1)*dennis.speed;
-  }
+  move(dennis, dennis.dx, dennis.dy);
 }
 
-// Fog LOS
-const FOG_RADIUS = 120;
-
+// ---- UPDATE ----
 function update(){
   if(gameOver) return;
 
   // movement
-  if(keys["ArrowUp"])    move(player1,0,-player1.speed);
-  if(keys["ArrowDown"])  move(player1,0, player1.speed);
-  if(keys["ArrowLeft"])  move(player1,-player1.speed,0);
+  if(keys["ArrowUp"]) move(player1,0,-player1.speed);
+  if(keys["ArrowDown"]) move(player1,0, player1.speed);
+  if(keys["ArrowLeft"]) move(player1,-player1.speed,0);
   if(keys["ArrowRight"]) move(player1, player1.speed,0);
 
   if(keys["w"]) move(player2,0,-player2.speed);
@@ -111,76 +261,82 @@ function update(){
 
   moveDennis();
 
-  // collision with wallet (win)
-  if(rectIntersect(player1,wallet) || rectIntersect(player2,wallet)){
-    gameOver = true;
-  }
-
-  // Dennis punishment
+  // Dennis tag
   [player1, player2].forEach(p=>{
-    if(rectIntersect(p, dennis)){
+    if(rectIntersect(p,dennis)){
+      dennisScore++;
+
+      // reset player to start
       p.x = p.startX;
       p.y = p.startY;
+
+      // teleport Dennis away so he doesn't farm kills
+      teleportDennisAway();
     }
   });
+
+  // Wallet capture → re-init level
+  if(rectIntersect(player1,wallet) || rectIntersect(player2,wallet)){
+    playerScore++;
+    initLevel();
+  }
 }
 
+// ---- DRAW ----
+const FOG_RADIUS = 120;
 function draw(){
   ctx.clearRect(0,0,canvas.width,canvas.height);
 
-  // walls
-  ctx.fillStyle = "gray";
+  ctx.fillStyle="gray";
   walls.forEach(w=>ctx.fillRect(w.x,w.y,w.w,w.h));
 
-  // wallet
-  ctx.drawImage(imgWallet, wallet.x, wallet.y, wallet.w, wallet.h);
+  ctx.drawImage(imgWallet, wallet.x,wallet.y,wallet.w,wallet.h);
+  ctx.drawImage(imgDennis, dennis.x,dennis.y,dennis.w,dennis.h);
+  ctx.drawImage(imgPlayer1, player1.x,player1.y,player1.w,player1.h);
+  ctx.drawImage(imgPlayer2, player2.x,player2.y,player2.w,player2.h);
 
-  // dennis
-  ctx.drawImage(imgDennis, dennis.x, dennis.y, dennis.w, dennis.h);
-
-
-  // players
-  ctx.drawImage(imgPlayer1, player1.x, player1.y, player1.w, player1.h);
-  ctx.drawImage(imgPlayer2, player2.x, player2.y, player2.w, player2.h);
-
-  // Fog of war
+  // fog
   const fog = document.createElement("canvas");
-  fog.width = canvas.width;
-  fog.height = canvas.height;
+  fog.width = canvas.width; fog.height=canvas.height;
   const fctx = fog.getContext("2d");
-  fctx.fillStyle = "black";
-  fctx.fillRect(0,0,fog.width,fog.height);
+  fctx.fillStyle="black"; fctx.fillRect(0,0,fog.width,fog.height);
 
-  fctx.globalCompositeOperation = "destination-out";
-  [player1, player2].forEach(p=>{
-    let grad = fctx.createRadialGradient(
+  fctx.globalCompositeOperation="destination-out";
+  [player1,player2].forEach(p=>{
+    let g = fctx.createRadialGradient(
       p.x+p.w/2,p.y+p.h/2,0,
       p.x+p.w/2,p.y+p.h/2,FOG_RADIUS
     );
-    grad.addColorStop(0,"rgba(0,0,0,1)");
-    grad.addColorStop(1,"rgba(0,0,0,0)");
-    fctx.fillStyle = grad;
+    g.addColorStop(0,"rgba(0,0,0,1)");
+    g.addColorStop(1,"rgba(0,0,0,0)");
+    fctx.fillStyle=g;
     fctx.beginPath();
     fctx.arc(p.x+p.w/2,p.y+p.h/2,FOG_RADIUS,0,Math.PI*2);
     fctx.fill();
   });
-  ctx.drawImage(fog,0,0);
+  ctx.drawImage(fog,0,0);  
 
-  // win screen
-  if(gameOver){
-    ctx.fillStyle="white";
-    ctx.font="40px sans-serif";
-    ctx.fillText("YOU WIN!", canvas.width/2-100, canvas.height/2);
-  }
+  // SCORE DISPLAY (HUD)
+  ctx.fillStyle = "white";
+  ctx.font = "20px sans-serif";
+  ctx.fillText(`Players: ${playerScore}`, 10, 20);
+  ctx.fillText(`Dennis: ${dennisScore}`, 10, 45);
 }
 
 function gameLoop(){
-  update();
-  draw();
+  update(); draw();
   requestAnimationFrame(gameLoop);
 }
-gameLoop();
+
+// start game once images load
+let loaded=0;
+function checkLoaded(){ if(++loaded===4) { initLevel(); gameLoop(); } }
+imgPlayer1.onload=checkLoaded;
+imgPlayer2.onload=checkLoaded;
+imgDennis.onload=checkLoaded;
+imgWallet.onload=checkLoaded;
 </script>
+
 
 </body>
 </html>
